@@ -260,10 +260,7 @@ async function handleAnthropicNativePath(
   }
 
   const err = lastError as { message?: string } | null;
-  throw new ProxyError(
-    `All providers failed: ${err?.message || lastError}`,
-    lastStatusCode ?? 500
-  );
+  throw new ProxyError(`All providers failed: ${err?.message || lastError}`, lastStatusCode ?? 500);
 }
 
 /**
