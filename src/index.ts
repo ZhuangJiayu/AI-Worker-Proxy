@@ -171,6 +171,7 @@ async function handleAnthropicNativePath(
   env: Env
 ): Promise<Response> {
   let lastError: unknown = null;
+  let lastStatusCode: number | undefined;
 
   // First try all anthropic-compatible providers natively
   for (const config of providers) {
@@ -193,11 +194,17 @@ async function handleAnthropicNativePath(
     const apiKeys = resolveApiKeys(config, env);
 
     if (apiKeys.length === 0) {
-      console.warn(
-        `[AnthropicNativePath] No API keys found for provider: ${config.provider}/${config.model}`
-      );
-      lastError = new Error(`No API keys configured for ${config.provider}/${config.model}`);
-      continue;
+      if (config.provider === 'anthropic-compatible') {
+        // Keyless local gateway (vLLM, Ollama, ...) — mirror TokenManager's
+        // pass-through and let the upstream decide on auth
+        apiKeys.push('');
+      } else {
+        console.warn(
+          `[AnthropicNativePath] No API keys found for provider: ${config.provider}/${config.model}`
+        );
+        lastError = new Error(`No API keys configured for ${config.provider}/${config.model}`);
+        continue;
+      }
     }
 
     for (const apiKey of apiKeys) {
@@ -206,6 +213,9 @@ async function handleAnthropicNativePath(
         const result = await withTimeout(provider.nativeChat(body, apiKey), timeoutMs);
         if (!result.success) {
           lastError = result.error;
+          if (result.statusCode) {
+            lastStatusCode = result.statusCode;
+          }
           if (!shouldRotateKey(result.statusCode, result.error)) {
             break;
           }
@@ -226,6 +236,13 @@ async function handleAnthropicNativePath(
         return json(result.rawResponse);
       } catch (error: unknown) {
         lastError = error;
+        // SDK errors carry the HTTP status on `status` (not `statusCode`) — check both
+        const status =
+          (error as { status?: number; statusCode?: number } | null)?.status ??
+          (error as { statusCode?: number } | null)?.statusCode;
+        if (status) {
+          lastStatusCode = status;
+        }
         if (!isRetryableError(error)) {
           break;
         }
@@ -242,10 +259,10 @@ async function handleAnthropicNativePath(
     return handleAnthropicConversionPath(body, router, otherProviders);
   }
 
-  const err = lastError as { message?: string; statusCode?: number } | null;
+  const err = lastError as { message?: string } | null;
   throw new ProxyError(
     `All providers failed: ${err?.message || lastError}`,
-    err?.statusCode || 500
+    lastStatusCode ?? 500
   );
 }
 

@@ -297,7 +297,6 @@ export class AnthropicStreamAdapter {
   }
 
   createTransformStream(): TransformStream<Uint8Array, Uint8Array> {
-    let currentToolIndex = -1;
     let lineBuffer = '';
 
     return new TransformStream({
@@ -310,13 +309,13 @@ export class AnthropicStreamAdapter {
         lineBuffer = lines.pop() || '';
 
         for (const line of lines) {
-          currentToolIndex = this.processSSELine(line, controller, currentToolIndex);
+          this.processSSELine(line, controller);
         }
       },
       flush: (controller) => {
         // Process any remaining buffered data
         if (lineBuffer) {
-          this.processSSELine(lineBuffer, controller, currentToolIndex);
+          this.processSSELine(lineBuffer, controller);
         }
         lineBuffer = '';
         // Upstream ended without a finish_reason chunk — close gracefully so
@@ -339,23 +338,19 @@ export class AnthropicStreamAdapter {
   }
 
   /**
-   * Process a single SSE line and return the updated tool call index.
+   * Process a single SSE line.
    */
-  private processSSELine(
-    line: string,
-    controller: TransformStreamDefaultController,
-    toolIndex: number
-  ): number {
-    if (!line.startsWith('data: ')) return toolIndex;
+  private processSSELine(line: string, controller: TransformStreamDefaultController): void {
+    if (!line.startsWith('data: ')) return;
     const payload = line.slice(6).trim();
-    if (payload === '[DONE]') return toolIndex;
+    if (payload === '[DONE]') return;
 
     let parsed;
     try {
       parsed = JSON.parse(payload);
     } catch {
       // Invalid JSON in SSE — skip this line
-      return toolIndex;
+      return;
     }
 
     // Upstream-injected error (provider stream catch blocks) — surface it to
@@ -377,16 +372,15 @@ export class AnthropicStreamAdapter {
           },
         })
       );
-      return toolIndex;
+      return;
     }
 
     const choice = parsed.choices?.[0];
-    if (!choice) return toolIndex;
+    if (!choice) return;
 
     // Some OpenAI-compatible providers omit `delta` on the final chunk
     const delta = choice.delta ?? {};
     const finish_reason = choice.finish_reason;
-    let currentToolIndex = toolIndex;
 
     // Start message on first chunk
     if (!this.started) {
@@ -422,7 +416,6 @@ export class AnthropicStreamAdapter {
             this.stopBlock(controller);
           }
 
-          currentToolIndex++;
           this.activeBlockIndex = this.blockIndex++;
           this.toolBlockActive = true;
           if (tc.index !== undefined) {
@@ -482,7 +475,5 @@ export class AnthropicStreamAdapter {
 
       controller.enqueue(this.encodeSSE('message_stop', { type: 'message_stop' }));
     }
-
-    return currentToolIndex;
   }
 }
